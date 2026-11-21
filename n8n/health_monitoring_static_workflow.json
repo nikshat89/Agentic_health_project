@@ -1,0 +1,93 @@
+{
+  "name": "Agentic Health Monitoring - Static CSV Multi-Agent (No Webhook)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "8d6a1a11-8e24-4d80-9d72-7f5b10c0a101",
+      "name": "Run Manually",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-760, 260]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "C:/Users/Nikshat Sharma/OneDrive/Desktop/agentic_health_project/data/Synthetic_patient-HealthCare-Monitoring_dataset.csv",
+        "options": {}
+      },
+      "id": "8d6a1a11-8e24-4d80-9d72-7f5b10c0a102",
+      "name": "Read Health Dataset CSV",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [-520, 260],
+      "notesInFlow": true,
+      "notes": "Reads the user's 60,000-row synthetic patient dataset. If your project folder is elsewhere, update fileSelector. n8n file access must be allowed for the project directory."
+    },
+    {
+      "parameters": {
+        "operation": "csv",
+        "binaryPropertyName": "data",
+        "options": {
+          "headerRow": true,
+          "delimiter": ","
+        }
+      },
+      "id": "8d6a1a11-8e24-4d80-9d72-7f5b10c0a103",
+      "name": "Extract CSV Rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [-280, 260]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst required = ['Patient Number','Heart Rate (bpm)','SpO2 Level (%)','Systolic Blood Pressure (mmHg)','Diastolic Blood Pressure (mmHg)','Body Temperature (°C)','Fall Detection','Predicted Disease','Data Accuracy (%)','Heart Rate Alert','SpO2 Level Alert','Blood Pressure Alert','Temperature Alert'];\nreturn items.map(item => {\n  const row = item.json;\n  const missingFields = required.filter(k => row[k] === undefined || row[k] === null || String(row[k]).trim() === '');\n  const accuracy = Number(row['Data Accuracy (%)']);\n  const accuracyReview = Number.isFinite(accuracy) && accuracy < 80;\n  return { json: { ...row, _dataQuality: { missingFields, accuracyReview, accuracyReviewNote: accuracyReview ? 'Below configurable 80% engineering review threshold; not a clinical standard.' : null } } };\n});"
+      },
+      "id": "8d6a1a11-8e24-4d80-9d72-7f5b10c0a104",
+      "name": "Data Quality Agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-40, 260],
+      "notesInFlow": true,
+      "notes": "Checks required fields and flags low data-accuracy scores. It does not alter the original alert labels."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst alertFields = ['Heart Rate Alert','SpO2 Level Alert','Blood Pressure Alert','Temperature Alert'];\nreturn items.map(item => {\n  const row = item.json;\n  const abnormalAlerts = alertFields.filter(k => String(row[k] ?? '').trim().toUpperCase() === 'ABNORMAL');\n  const fall = ['yes','true','1','detected','fall'].includes(String(row['Fall Detection'] ?? '').trim().toLowerCase());\n  return { json: { ...row, _monitoring: { abnormalAlerts, positiveFallFlag: fall, requiresReview: abnormalAlerts.length > 0 || fall || Boolean(row._dataQuality?.accuracyReview) } } };\n});"
+      },
+      "id": "8d6a1a11-8e24-4d80-9d72-7f5b10c0a105",
+      "name": "Monitoring Agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 260],
+      "notesInFlow": true,
+      "notes": "Uses the dataset's supplied ABNORMAL labels and fall flag. Does not make a new diagnosis."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst alertFields = ['Heart Rate Alert','SpO2 Level Alert','Blood Pressure Alert','Temperature Alert'];\nconst alertCounts = {};\nfor (const field of alertFields) {\n  let abnormal = 0, normal = 0, otherOrMissing = 0;\n  for (const item of items) { const v = String(item.json[field] ?? '').trim().toUpperCase(); if (v === 'ABNORMAL') abnormal++; else if (v === 'NORMAL') normal++; else otherOrMissing++; }\n  alertCounts[field] = { abnormal, normal, otherOrMissing };\n}\nconst positiveFall = items.filter(i => ['yes','true','1','detected','fall'].includes(String(i.json['Fall Detection'] ?? '').trim().toLowerCase()));\nconst reviewRecords = items.filter(i => i.json._monitoring?.requiresReview);\nconst qualityIssues = items.filter(i => (i.json._dataQuality?.missingFields?.length || 0) > 0 || i.json._dataQuality?.accuracyReview);\nconst diseaseCounts = {};\nfor (const i of items) { const disease = String(i.json['Predicted Disease'] ?? 'Unknown'); diseaseCounts[disease] = (diseaseCounts[disease] || 0) + 1; }\nconst topDiseases = Object.entries(diseaseCounts).sort((a,b) => b[1]-a[1]).slice(0,20).map(([label,count]) => ({label,count}));\nconst samples = reviewRecords.slice(0,25).map(i => ({ patientNumber: i.json['Patient Number'], predictedDisease: i.json['Predicted Disease'], abnormalAlerts: i.json._monitoring.abnormalAlerts, positiveFallFlag: i.json._monitoring.positiveFallFlag, dataAccuracy: i.json['Data Accuracy (%)'], quality: i.json._dataQuality }));\nreturn [{ json: { workflow: 'Agentic Health Monitoring - Static CSV Multi-Agent (No Webhook)', analysisType: 'cross-sectional synthetic dataset', totalRecords: items.length, uniquePatientNumbers: new Set(items.map(i => String(i.json['Patient Number'] ?? '')).filter(Boolean)).size, alertCounts, positiveFallRecords: positiveFall.length, recordsWithReviewFlags: reviewRecords.length, recordsWithDataQualityFlags: qualityIssues.length, topPredictedDiseaseLabels: topDiseases, sampleReviewRecords: samples, limitations: ['Dataset has no timestamp/date column; no longitudinal trend is calculated.','Supplied predicted disease and alert fields are not independently validated clinical outcomes.','Research prototype only; not a diagnostic or emergency service.'] } }];"
+      },
+      "id": "8d6a1a11-8e24-4d80-9d72-7f5b10c0a106",
+      "name": "Clinical Summary Agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 260],
+      "notesInFlow": true,
+      "notes": "Returns one cohort summary item with alert counts and up to 25 sample records requiring review. Check the final node output after execution."
+    }
+  ],
+  "connections": {
+    "Run Manually": { "main": [[{ "node": "Read Health Dataset CSV", "type": "main", "index": 0 }]] },
+    "Read Health Dataset CSV": { "main": [[{ "node": "Extract CSV Rows", "type": "main", "index": 0 }]] },
+    "Extract CSV Rows": { "main": [[{ "node": "Data Quality Agent", "type": "main", "index": 0 }]] },
+    "Data Quality Agent": { "main": [[{ "node": "Monitoring Agent", "type": "main", "index": 0 }]] },
+    "Monitoring Agent": { "main": [[{ "node": "Clinical Summary Agent", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "e4b00b0e-25d2-48c8-b0d7-0d2c2efc6a11",
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": []
+}
